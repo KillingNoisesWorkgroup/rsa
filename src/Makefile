@@ -1,7 +1,7 @@
 CC=gcc
 CFLAGS=-c
 LDFLAGS=
-SOURCES= rsa-keygen.c
+SOURCES= rsa.c
 OBJECTS=$(SOURCES:.c=.o)
 EXECUTABLE=rsa.exe
 
