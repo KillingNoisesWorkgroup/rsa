@@ -2,6 +2,7 @@
 #include <openssl/bio.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <sys/stat.h>
 
 #define PRIME 0
 #define COMPOSITE 1
@@ -29,6 +30,39 @@ rsa_key* rsa_key_new(){
 void rsa_key_free(rsa_key *k){
 	BN_free(k->x); BN_free(k->n);
 	free(k);
+}
+
+void rsa_key_print(FILE *stream, rsa_key *rsa){
+	BN_print_fp(stream, rsa->x);
+	fprintf(stream, "\n");
+	BN_print_fp(stream, rsa->n);
+	fprintf(stream, "\n");
+}
+
+rsa_key* rsa_key_read(FILE *stream){
+	char *buf = NULL;
+	rsa_key *rsa;
+	int size;
+	rsa = rsa_key_new();
+	getline(&buf, &size, stream);
+	BN_hex2bn(&rsa->x, buf);
+	getline(&buf, &size, stream);
+	BN_hex2bn(&rsa->n, buf);
+	free(buf);
+	return rsa;
+}
+
+int rsa_key_block_size(rsa_key *rsa){
+	int shifts = 0;
+	BIGNUM *tmp;
+	tmp = BN_new();
+	BN_copy(tmp, rsa->n);
+	while(!BN_is_zero(tmp)){
+		BN_rshift(tmp, tmp, 8);
+		shifts++;
+	}
+	BN_free(tmp);
+	return shifts;
 }
 
 int witness(BIGNUM* a, BIGNUM* n){
@@ -88,10 +122,7 @@ void generate_prime(BIGNUM** p, int bits, int attempts){
 	BN_lshift(lim, lim, bits);
 	for(i = 0; i < attempts; i++){
 		BN_rand_range(*p, lim);
-		if(miller_rabin(*p, 40) == PRIME){
-			printf("finded prime\n");
-			break;
-		}
+		if(miller_rabin(*p, 40) == PRIME) break;
 	}
 	BN_free(lim);
 }
@@ -196,6 +227,43 @@ void crypt_msg(BIGNUM *ret, BIGNUM *msg, rsa_key *k){
 	fast_pow(ret, msg, k->x, k->n);
 }
 
+void crypt_from_file(const char *file, const char *out, const char *key){
+	rsa_key *rsa;
+	FILE *keystream, *filestream, *outstream;
+	BIGNUM *msg, *tmp;
+	unsigned char buf[1024];
+	int block_size;
+	msg = BN_new(); tmp = BN_new();
+	if((filestream = fopen(file, "r")) == NULL){
+		perror("fopen");
+		exit(1);
+	}
+	if((keystream = fopen(key, "r")) == NULL){
+		perror("fopen");
+		exit(1);
+	}
+	if((outstream = fopen(out, "w")) == NULL){
+		perror("fopen");
+		exit(1);
+	}
+	rsa = rsa_key_read(keystream);
+	block_size = rsa_key_block_size(rsa);
+	printf("%d\n", block_size);
+	while(!feof(filestream)){
+		fread(buf, sizeof(buf[0]), block_size, filestream);
+		printf("%s\n", buf);
+		BN_bin2bn(buf, block_size, tmp);
+		BN_add(msg, msg, tmp);
+		BN_lshift(msg, msg, 8);
+	}
+	crypt_msg(msg, msg, rsa);
+	printf("%s\n", BN_bn2hex(msg));
+	BN_print_fp(outstream, msg);
+	BN_free(msg); BN_free(tmp);
+	rsa_key_free(rsa);
+	fclose(keystream); fclose(filestream); fclose(outstream);
+}
+
 void test_rsa(unsigned long word, int bits){
 	rsa_key *public, *private;
 	BIGNUM *msg;
@@ -211,9 +279,37 @@ void test_rsa(unsigned long word, int bits){
 	BN_free(msg);
 }
 
+void generate_to_file(const char *pub, const char *pri, int bits){
+	FILE *file1, *file2;
+	rsa_key *public, *private;
+	if((file1 = fopen(pub, "w")) == NULL){
+		perror("fopen");
+		exit(1);
+	}
+	if((file2 = fopen(pri, "w")) == NULL){
+		perror("fopen");
+		exit(1);
+	}
+	if((chmod(pri, S_IRUSR | S_IWUSR | S_IXUSR)) == -1){
+		perror("fchmod");
+		exit(1);
+	}
+	public = rsa_key_new(); private = rsa_key_new();
+	rsa_keygen(public, private, bits);
+	rsa_key_print(file1, public);
+	rsa_key_print(file2, private);
+	rsa_key_free(public); rsa_key_free(private);
+}
+
 int main(int nargs, char** argv){
 	//test_rsa(atoi(argv[2]), atoi(argv[1]));
 	//test_miller_rabin(atoi(argv[1]), atoi(argv[2]), atoi(argv[3]));
 	//test_ext_gcd(atoi(argv[1]), atoi(argv[2]));
+	if(!strcmp(argv[1], "-g")){
+		generate_to_file(argv[2], argv[3], atoi(argv[4]));
+	}
+	if(!strcmp(argv[1], "-e")){
+		crypt_from_file(argv[2], argv[3], argv[4]);
+	}
 	return 1;
 }

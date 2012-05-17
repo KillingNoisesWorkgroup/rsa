@@ -1,6 +1,6 @@
 CC=gcc
 CFLAGS=-c
-LDFLAGS=
+LDFLAGS=-lssl
 SOURCES= rsa.c
 OBJECTS=$(SOURCES:.c=.o)
 EXECUTABLE=rsa.exe
