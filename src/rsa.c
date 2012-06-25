@@ -1,7 +1,9 @@
+#define _GNU_SOURCE
 #include <openssl/bn.h>
 #include <openssl/bio.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 
 #define PRIME 0
@@ -50,19 +52,6 @@ rsa_key* rsa_key_read(FILE *stream){
 	BN_hex2bn(&rsa->n, buf);
 	free(buf);
 	return rsa;
-}
-
-int rsa_key_block_size(rsa_key *rsa){
-	int shifts = 0;
-	BIGNUM *tmp;
-	tmp = BN_new();
-	BN_copy(tmp, rsa->n);
-	while(!BN_is_zero(tmp)){
-		BN_rshift(tmp, tmp, 8);
-		shifts++;
-	}
-	BN_free(tmp);
-	return shifts;
 }
 
 int witness(BIGNUM* a, BIGNUM* n){
@@ -115,51 +104,10 @@ int miller_rabin(BIGNUM* n, int s){
 
 void generate_prime(BIGNUM** p, int bits, int attempts){
 	int i;
-	int retval;
-	BIGNUM *lim;
-	lim = BN_new();
-	BN_one(lim);
-	BN_lshift(lim, lim, bits);
 	for(i = 0; i < attempts; i++){
-		BN_rand_range(*p, lim);
+		BN_rand(*p, bits, 1, 1);
 		if(miller_rabin(*p, 40) == PRIME) break;
 	}
-	BN_free(lim);
-}
-
-int test_miller_rabin(int s, int ololo, int bits){
-	BIGNUM *a;
-	int i;
-	a = BN_new();
-	/* Some simple prime numbers tests */
-	BN_set_word(a, 3);
-	CHECK_MR;
-	BN_set_word(a, 5);
-	CHECK_MR;
-	BN_set_word(a, 11);
-	CHECK_MR;
-	BN_set_word(a, 13);
-	CHECK_MR;
-	BN_set_word(a, 17);
-	CHECK_MR;
-	BN_set_word(a, 19);
-	CHECK_MR;
-	BN_set_word(a, 23);
-	CHECK_MR;
-	BN_set_word(a, 29);
-	CHECK_MR;
-	BN_set_word(a, 31);
-	CHECK_MR;
-	BN_set_word(a, 37);
-	CHECK_MR;
-	printf("\n");
-	/* SSL-generated prime numbers tests */
-	for(i = 0; i < ololo; i++){
-		BN_generate_prime(a, bits, 1, NULL, NULL, NULL, NULL);
-		CHECK_MR;
-	}
-	printf("\n");
-	BN_free(a);
 }
 
 void ext_gcd(BIGNUM *a, BIGNUM *b, BIGNUM *x, BIGNUM *y, BIGNUM *d){
@@ -180,14 +128,6 @@ void ext_gcd(BIGNUM *a, BIGNUM *b, BIGNUM *x, BIGNUM *y, BIGNUM *d){
 	BN_mul(d1, d1, y1, ctx);				// d1 = d1 * y1
 	BN_sub(y, x1, d1);						// y = x1 - d1
 	BN_free(d1); BN_free(x1); BN_free(y1); BN_free(mod);
-}
-
-void test_ext_gcd(unsigned long a, unsigned long b){
-	BIGNUM *a_b, *b_b, *x, *y, *d;
-	a_b = BN_new(); b_b = BN_new(); d = BN_new(); x = BN_new(); y = BN_new();
-	BN_set_word(a_b, a); BN_set_word(b_b, b);
-	ext_gcd(a_b, b_b, x, y, d);
-	printf("%s = %lu*%s + %lu*%s\n", BN_bn2dec(d), a, BN_bn2dec(x), b, BN_bn2dec(y));
 }
 
 void fast_pow(BIGNUM *ret, BIGNUM *a, BIGNUM *b, BIGNUM *n){
@@ -227,56 +167,96 @@ void crypt_msg(BIGNUM *ret, BIGNUM *msg, rsa_key *k){
 	fast_pow(ret, msg, k->x, k->n);
 }
 
-void crypt_from_file(const char *file, const char *out, const char *key){
-	rsa_key *rsa;
-	FILE *keystream, *filestream, *outstream;
-	BIGNUM *msg, *tmp;
-	unsigned char buf[1024];
-	int block_size;
-	msg = BN_new(); tmp = BN_new();
-	if((filestream = fopen(file, "r")) == NULL){
+void encrypt(const char *src, const char *dst, const char *key){
+	FILE *key_file, *src_file, *dst_file;
+	int size, block_size;
+	unsigned char* buf;
+	rsa_key* k;
+	BIGNUM* msg;
+	
+	msg = BN_new();
+	
+	if((key_file = fopen(key, "r")) == NULL){
 		perror("fopen");
 		exit(1);
 	}
-	if((keystream = fopen(key, "r")) == NULL){
+	if((src_file = fopen(src, "rb")) == NULL){
 		perror("fopen");
 		exit(1);
 	}
-	if((outstream = fopen(out, "w")) == NULL){
+	if((dst_file = fopen(dst, "w+b")) == NULL){
 		perror("fopen");
 		exit(1);
 	}
-	rsa = rsa_key_read(keystream);
-	block_size = rsa_key_block_size(rsa);
-	printf("%d\n", block_size);
-	while(!feof(filestream)){
-		fread(buf, sizeof(buf[0]), block_size, filestream);
-		printf("%s\n", buf);
-		BN_bin2bn(buf, block_size, tmp);
-		BN_add(msg, msg, tmp);
-		BN_lshift(msg, msg, 8);
+	
+	k = rsa_key_read(key_file);
+	block_size = BN_num_bytes(k->n);
+	
+	if((buf = malloc(block_size)) == NULL){
+		perror("malloc");
+		exit(1);
 	}
-	crypt_msg(msg, msg, rsa);
-	printf("%s\n", BN_bn2hex(msg));
-	BN_print_fp(outstream, msg);
-	BN_free(msg); BN_free(tmp);
-	rsa_key_free(rsa);
-	fclose(keystream); fclose(filestream); fclose(outstream);
+	
+	while((size = fread(buf, sizeof(char), block_size, src_file)) > 0){
+		bzero(buf, block_size);
+		BN_bin2bn(buf, size, msg);
+		crypt_msg(msg, msg, k);
+		BN_bn2bin(msg, buf);
+		size = BN_num_bytes(msg);
+		fwrite(&size, sizeof(size), 1, dst_file);
+		fwrite(buf, size, 1, dst_file);
+	}
+	BN_free(msg);
+	free(buf);
+	fclose(key_file);
+	fclose(dst_file);
+	fclose(src_file);
+	rsa_key_free(k);
 }
 
-void test_rsa(unsigned long word, int bits){
-	rsa_key *public, *private;
-	BIGNUM *msg;
+void decrypt(const char *src, const char *dst, const char *key){
+	FILE *key_file, *src_file, *dst_file;
+	int size, block_size;
+	unsigned char* buf;
+	rsa_key* k;
+	BIGNUM* msg;
+	
 	msg = BN_new();
-	BN_set_word(msg, word);
-	public = rsa_key_new(); private = rsa_key_new();
-	rsa_keygen(public, private, bits);
-	crypt_msg(msg, msg, private);
-	printf("crypted %s\n", BN_bn2dec(msg));
-	crypt_msg(msg, msg, public);
-	printf("encrypted %s\n", BN_bn2dec(msg));
-	rsa_key_free(public); rsa_key_free(private);
+	
+	if((key_file = fopen(key, "r")) == NULL){
+		perror("fopen");
+		exit(1);
+	}
+	if((src_file = fopen(src, "rb")) == NULL){
+		perror("fopen");
+		exit(1);
+	}
+	if((dst_file = fopen(dst, "w+b")) == NULL){
+		perror("fopen");
+		exit(1);
+	}
+	
+	k = rsa_key_read(key_file);
+	block_size = BN_num_bytes(k->n);
+	
+	if((buf = malloc(block_size)) == NULL){
+		perror("malloc");
+		exit(1);
+	}
+	
+	while(fread(&size, sizeof(size), 1, src_file) > 0){
+		fread(buf, size, 1, src_file);
+		BN_bin2bn(buf, size, msg);
+		crypt_msg(msg, msg, k);
+		BN_bn2bin(msg, buf);
+		fprintf(dst_file, "%s", buf);
+	}
 	BN_free(msg);
+	free(buf);
+	fclose(key_file);
+	fclose(dst_file);
+	fclose(src_file);
+	rsa_key_free(k);
 }
 
 void generate_to_file(const char *pub, const char *pri, int bits){
@@ -302,14 +282,19 @@ void generate_to_file(const char *pub, const char *pri, int bits){
 }
 
 int main(int nargs, char** argv){
-	//test_rsa(atoi(argv[2]), atoi(argv[1]));
-	//test_miller_rabin(atoi(argv[1]), atoi(argv[2]), atoi(argv[3]));
-	//test_ext_gcd(atoi(argv[1]), atoi(argv[2]));
+	BIGNUM *msg;
+	msg = BN_new();
+	FILE *f_pub, *f_priv;
+	rsa_key *pub, *priv;
+	char *msg_n;
 	if(!strcmp(argv[1], "-g")){
 		generate_to_file(argv[2], argv[3], atoi(argv[4]));
 	}
 	if(!strcmp(argv[1], "-e")){
-		crypt_from_file(argv[2], argv[3], argv[4]);
+		encrypt(argv[2], argv[3], argv[4]);
+	}
+	if(!strcmp(argv[1], "-d")){
+		decrypt(argv[2], argv[3], argv[4]);
 	}
 	return 1;
 }
