@@ -285,7 +285,7 @@ void generate_to_file(const char *pub, const char *pri, int bits){
 
 void help(char** argv){
 	printf("Usage: %s {-g public private num | -e src dst key | -d src dst key}\n", argv[0]);
-	printf("%5s: generates public and private files with keys of num bytes length\n", "-g");
+	printf("%5s: generates public and private files with keys of num bits length\n", "-g");
 	printf("%5s: encodes src file to dst file with given key file\n", "-e");
 	printf("%5s: decodes src file to dst file with given key file\n", "-d");
 	exit(1);
