@@ -197,14 +197,14 @@ void encrypt(const char *src, const char *dst, const char *key){
 		exit(1);
 	}
 	
-	while((size = fread(buf, sizeof(char), block_size, src_file)) > 0){
-		bzero(buf, block_size);
+	while((size = fread(buf, sizeof(char), block_size - 1, src_file)) > 0){
 		BN_bin2bn(buf, size, msg);
 		crypt_msg(msg, msg, k);
+		bzero(buf, block_size);
+		fwrite(buf, sizeof(char), block_size - BN_num_bytes(msg), dst_file);
 		BN_bn2bin(msg, buf);
-		size = BN_num_bytes(msg);
+		fwrite(buf, sizeof(char), BN_num_bytes(msg), dst_file);
 		fwrite(&size, sizeof(size), 1, dst_file);
-		fwrite(buf, size, 1, dst_file);
 	}
 	BN_free(msg);
 	free(buf);
@@ -244,12 +244,14 @@ void decrypt(const char *src, const char *dst, const char *key){
 		exit(1);
 	}
 	
-	while(fread(&size, sizeof(size), 1, src_file) > 0){
-		fread(buf, size, 1, src_file);
-		BN_bin2bn(buf, size, msg);
+	while(fread(buf, sizeof(char), block_size, src_file) > 0){
+		BN_bin2bn(buf, block_size, msg);
 		crypt_msg(msg, msg, k);
+		bzero(buf, block_size - 1);
+		fread(&size, sizeof(size), 1, src_file);
+		fwrite(buf, sizeof(char), size - BN_num_bytes(msg), dst_file);
 		BN_bn2bin(msg, buf);
-		fprintf(dst_file, "%s", buf);
+		fwrite(buf, sizeof(char), BN_num_bytes(msg), dst_file);
 	}
 	BN_free(msg);
 	free(buf);
@@ -281,20 +283,31 @@ void generate_to_file(const char *pub, const char *pri, int bits){
 	rsa_key_free(public); rsa_key_free(private);
 }
 
+void help(char** argv){
+	printf("Usage: %s {-g public private num | -e src dst key | -d src dst key}\n", argv[0]);
+	printf("%5s: generates public and private files with keys of num bytes length\n", "-g");
+	printf("%5s: encodes src file to dst file with given key file\n", "-e");
+	printf("%5s: decodes src file to dst file with given key file\n", "-d");
+	exit(1);
+}
+
 int main(int nargs, char** argv){
 	BIGNUM *msg;
 	msg = BN_new();
 	FILE *f_pub, *f_priv;
 	rsa_key *pub, *priv;
 	char *msg_n;
+	if(nargs != 5) help(argv);
 	if(!strcmp(argv[1], "-g")){
 		generate_to_file(argv[2], argv[3], atoi(argv[4]));
-	}
-	if(!strcmp(argv[1], "-e")){
-		encrypt(argv[2], argv[3], argv[4]);
-	}
-	if(!strcmp(argv[1], "-d")){
-		decrypt(argv[2], argv[3], argv[4]);
+	} else {
+		if(!strcmp(argv[1], "-e")){
+			encrypt(argv[2], argv[3], argv[4]);
+		} else {
+			if(!strcmp(argv[1], "-d")){
+				decrypt(argv[2], argv[3], argv[4]);
+			} else help(argv);
+		}
 	}
 	return 1;
 }
